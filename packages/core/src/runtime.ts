@@ -1073,7 +1073,8 @@ export function writeSession(file: string, messages: AgentMessage[]): void {
  * Rebuild a context from stored messages: drop system messages (rebuilt per run), drop a
  * trailing tool call that never got its result, keep the last SESSION_KEEP_MESSAGES (and
  * no more than SESSION_KEEP_CHARS of JSON) and fold everything older into one plain-text
- * summary message. Idempotent on an already folded transcript.
+ * summary message. These limits are soft when the latest user turn exceeds them: its
+ * tool calls and results must stay together. Idempotent on an already folded transcript.
  */
 export function restoreMessages(stored: AgentMessage[], now: Date, keep = SESSION_KEEP_MESSAGES, maxChars = SESSION_KEEP_CHARS): AgentMessage[] {
   const messages = dropOrphanToolCalls(stored.filter((m) => m.role !== "system"));
@@ -1081,13 +1082,16 @@ export function restoreMessages(stored: AgentMessage[], now: Date, keep = SESSIO
   // Large tool results can blow the context long before the message count does.
   while (start < messages.length - 1 && charSize(messages.slice(start)) > maxChars) {
     const next = nextUserTurn(messages, start + 1);
-    if (next >= messages.length || next === start) break;
+    if (next >= messages.length || next <= start) break;
     start = next;
   }
   if (start <= 0) return messages;
 
   const older = messages.slice(0, start);
-  const summary: AgentMessage = {
+  // An oversized latest turn stays intact on every tool iteration. Reuse the
+  // already-folded prefix instead of repeatedly summarising the summary itself.
+  const priorSummary = older.length === 1 ? older[0] : undefined;
+  const summary: AgentMessage = priorSummary?.role === "user" && messageText(priorSummary.content).startsWith("[Conversation summary] ") ? priorSummary : {
     role: "user",
     content: [{ type: "text", text: summarizeMessages(older) }],
     timestamp: now.getTime(),
@@ -1106,11 +1110,17 @@ export function trimContext(messages: AgentMessage[], now: Date): AgentMessage[]
   return system.length ? [...system, ...rest] : rest;
 }
 
-/** The kept slice must begin at a user turn so no tool result is left without its call. */
+/** Keep whole user turns, including the latest turn when it exceeds either soft limit. */
 function nextUserTurn(messages: AgentMessage[], from: number): number {
   let i = from;
   while (i < messages.length && messages[i]?.role !== "user") i++;
-  return i >= messages.length ? from : i;
+  if (i < messages.length) return i;
+  // A large screenshot or long tool sequence can put the requested cut inside the
+  // latest turn. Cutting there would send a tool result without its assistant call.
+  for (i = messages.length - 1; i > 0; i--) {
+    if (messages[i]?.role === "user") return i;
+  }
+  return 0;
 }
 
 function charSize(messages: AgentMessage[]): number {
