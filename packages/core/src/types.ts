@@ -130,7 +130,7 @@ export interface Contact {
 // Channels and events
 // ---------------------------------------------------------------------------
 
-export type Channel = "imessage" | "sms" | "email" | "a2a" | "chat" | "scheduled" | "system";
+export type Channel = "imessage" | "sms" | "whatsapp" | "email" | "a2a" | "chat" | "scheduled" | "system";
 
 /** A normalized inbound event, whatever the source. */
 export interface InboundMessage {
@@ -224,6 +224,8 @@ export interface AuditEntry {
 
 export interface OwnerProfile {
   name: string;
+  /** Preferred transport when delivering a schedule before any live conversation exists. */
+  channel?: "imessage" | "sms" | "whatsapp";
   phones: string[];
   emails: string[];
   timezone: string;

@@ -46,7 +46,7 @@ export interface LinkPassthrough {
 }
 
 export interface ProvisionDeps {
-  inkbox: InkboxProvisioner;
+  inkbox?: InkboxProvisioner;
   maritime: MaritimeProvisionOptions;
   /** Public base URL of this gateway, used for the webhook subscription and OAuth redirects. */
   publicUrl: string;
@@ -102,12 +102,26 @@ const SECRET_KEY_RE = /(KEY|SECRET|TOKEN|PASSWORD)/i;
 export function agentEnvFor(user: UserRecord, deps: AgentEnvDeps): EnvVarInput[] {
   const env: EnvVarInput[] = [
     { key: "PORT", value: String(MARITIME_AGENT_PORT), isSecret: false },
-    { key: "INKBOX_API_KEY", value: user.identityApiKey, isSecret: true },
-    { key: "INKBOX_AGENT_HANDLE", value: user.handle, isSecret: false },
-    { key: "INKBOX_IDENTITY_ID", value: user.identityId, isSecret: false },
     { key: "INSTINCT_OWNER_NAME", value: user.name, isSecret: false },
     { key: "INSTINCT_OWNER_PHONE", value: user.phone, isSecret: false },
   ];
+  if (user.channel === "whatsapp") {
+    if (!user.whatsappRelayToken || !user.whatsappPhoneNumberId || !deps.publicUrl) throw new Error("WhatsApp agent is missing its private relay configuration");
+    env.push(
+      { key: "INSTINCT_AGENT_HANDLE", value: user.handle, isSecret: false },
+      { key: "INSTINCT_AGENT_NAME", value: "Rex", isSecret: false },
+      { key: "INSTINCT_OWNER_CHANNEL", value: "whatsapp", isSecret: false },
+      { key: "WHATSAPP_PHONE_NUMBER_ID", value: user.whatsappPhoneNumberId, isSecret: false },
+      { key: "WHATSAPP_RELAY_URL", value: `${deps.publicUrl.replace(/\/+$/, "")}/api/whatsapp/send/${encodeURIComponent(user.id)}`, isSecret: false },
+      { key: "WHATSAPP_RELAY_TOKEN", value: user.whatsappRelayToken, isSecret: true },
+    );
+  } else {
+    env.push(
+      { key: "INKBOX_API_KEY", value: user.identityApiKey, isSecret: true },
+      { key: "INKBOX_AGENT_HANDLE", value: user.handle, isSecret: false },
+      { key: "INKBOX_IDENTITY_ID", value: user.identityId, isSecret: false },
+    );
+  }
   if (deps.inkboxBaseUrl) env.push({ key: "INKBOX_BASE_URL", value: deps.inkboxBaseUrl, isSecret: false });
   if (user.email) env.push({ key: "INSTINCT_OWNER_EMAIL", value: user.email, isSecret: false });
   if (deps.anthropicApiKey) env.push({ key: "ANTHROPIC_API_KEY", value: deps.anthropicApiKey, isSecret: true });
@@ -143,7 +157,7 @@ export function maritimeCreateBody(user: UserRecord, deps: AgentEnvDeps): Record
     desktop: true,
     externalId: user.id,
     idleTtlSeconds: deps.maritime.idleTtlSeconds ?? DEFAULT_IDLE_TTL_SECONDS,
-    instructions: personaFor(user),
+    instructions: user.channel === "whatsapp" ? `You are Rex, ${user.name}'s private assistant on WhatsApp. Be concise and ask before spending money.` : personaFor(user),
     initialEnvVars: agentEnvFor(user, deps),
     ...(deps.maritime.useMaritimeLlm ? { useMaritimeLlm: true } : {}),
   };
@@ -178,6 +192,7 @@ async function maritimeRequest(
       Accept: "application/json",
     },
     body: body === undefined ? undefined : JSON.stringify(body),
+    signal: AbortSignal.timeout(60_000),
   });
   const text = await res.text();
   if (!res.ok) throw new MaritimeApiError(res.status, summarizeError(text));
@@ -251,38 +266,42 @@ export async function provisionUser(input: ProvisionInput, deps: ProvisionDeps):
   let user =
     (deps.userId ? store.get(deps.userId) : undefined) ?? store.byHandle(input.handle) ?? blankRecord(input, deps.userId ?? newUserId());
   if (user.status === "ready" && user.maritimeAgentId) return user;
+  if (user.status === "deleting") throw new Error("Account is being deleted");
 
   user = store.save({ ...user, status: "provisioning", error: undefined });
   try {
-    if (!user.identityId) {
-      const identity = await deps.inkbox.provisionIdentity({
-        handle: user.handle,
-        displayName: `${user.name}'s Instinct`,
-        description: `Open Instinct for ${user.name}`,
-        imessage: true,
-        phone: false,
-      });
-      user = store.save({ ...user, identityId: identity.identityId, handle: identity.handle });
-      log.info("provision.identity", { userId: user.id, handle: user.handle });
-    }
-    if (!user.identityApiKey) {
-      const key = await deps.inkbox.mintIdentityKey(user.identityId, `open-instinct ${user.id}`);
-      user = store.save({ ...user, identityApiKey: key });
-      log.info("provision.identity_key", { userId: user.id });
-    }
-    if (!user.signingKey) {
-      const key = await deps.inkbox.ensureSigningKey(user.handle);
-      user = store.save({ ...user, signingKey: key });
-      log.info("provision.signing_key", { userId: user.id });
-    }
-    if (!user.webhookSubscriptionId) {
-      const sub = await deps.inkbox.subscribeWebhooks(user.identityId, webhookUrlFor(deps.publicUrl, user.id));
-      user = store.save({
-        ...user,
-        webhookSubscriptionId: sub.subscriptionId,
-        ...(sub.signingKey ? { webhookSigningKey: sub.signingKey } : {}),
-      });
-      log.info("provision.webhooks", { userId: user.id, subscriptionId: sub.subscriptionId });
+    if (user.channel !== "whatsapp") {
+      if (!deps.inkbox) throw new Error("Inkbox provisioner is required for this user");
+      if (!user.identityId) {
+        const identity = await deps.inkbox.provisionIdentity({
+          handle: user.handle,
+          displayName: `${user.name}'s Instinct`,
+          description: `Open Instinct for ${user.name}`,
+          imessage: true,
+          phone: false,
+        });
+        user = store.save({ ...user, identityId: identity.identityId, handle: identity.handle });
+        log.info("provision.identity", { userId: user.id, handle: user.handle });
+      }
+      if (!user.identityApiKey) {
+        const key = await deps.inkbox.mintIdentityKey(user.identityId, `open-instinct ${user.id}`);
+        user = store.save({ ...user, identityApiKey: key });
+        log.info("provision.identity_key", { userId: user.id });
+      }
+      if (!user.signingKey) {
+        const key = await deps.inkbox.ensureSigningKey(user.handle);
+        user = store.save({ ...user, signingKey: key });
+        log.info("provision.signing_key", { userId: user.id });
+      }
+      if (!user.webhookSubscriptionId) {
+        const sub = await deps.inkbox.subscribeWebhooks(user.identityId, webhookUrlFor(deps.publicUrl, user.id));
+        user = store.save({
+          ...user,
+          webhookSubscriptionId: sub.subscriptionId,
+          ...(sub.signingKey ? { webhookSigningKey: sub.signingKey } : {}),
+        });
+        log.info("provision.webhooks", { userId: user.id, subscriptionId: sub.subscriptionId });
+      }
     }
     if (!user.maritimeAgentId) {
       const agent = await createMaritimeAgent(user, deps);
@@ -302,4 +321,12 @@ export async function provisionUser(input: ProvisionInput, deps: ProvisionDeps):
     log.error("provision.failed", { userId: user.id, error: message });
     throw err;
   }
+}
+
+/** Only forget the local account after the private VM has been removed. Retries tolerate an already-deleted VM. */
+export async function deleteUserAgent(user: UserRecord, deps: Pick<ProvisionDeps, "maritime" | "fetchImpl">): Promise<void> {
+  const agentId = user.maritimeAgentId ?? (await findMaritimeAgent(deps, user.id))?.id;
+  if (!agentId) return;
+  try { await maritimeRequest(deps, "DELETE", `/api/agents/${encodeURIComponent(agentId)}`); }
+  catch (error) { if (!(error instanceof MaritimeApiError && error.status === 404)) throw error; }
 }

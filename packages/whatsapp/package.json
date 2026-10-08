@@ -1,7 +1,7 @@
 {
-  "name": "@open-instinct/gateway",
+  "name": "@open-instinct/whatsapp",
   "version": "0.1.0",
-  "description": "Open Instinct gateway: multi-user relay from Inkbox webhooks to Maritime-hosted agents, plus signup and connect pages",
+  "description": "Meta WhatsApp Cloud API transport and private per-user reply relay",
   "license": "MIT",
   "type": "module",
   "main": "./dist/index.js",
@@ -15,6 +15,6 @@
     "test": "vitest run --passWithNoTests",
     "lint": "tsc -p tsconfig.json --noEmit"
   },
-  "dependencies": { "@open-instinct/core": "workspace:*", "@open-instinct/apps": "workspace:*", "@open-instinct/inkbox": "workspace:*", "@open-instinct/whatsapp": "workspace:*", "@inkbox/sdk": "^0.7.13", "maritime-sdk": "^0.9.0" },
+  "dependencies": { "@open-instinct/core": "workspace:*" },
   "devDependencies": { "@types/node": "^22.15.0", "typescript": "^5.8.3", "vitest": "^3.2.4" }
 }

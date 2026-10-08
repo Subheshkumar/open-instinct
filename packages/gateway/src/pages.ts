@@ -276,3 +276,9 @@ export function renderMessage(title: string, text: string, status: "ok" | "error
     `<h1>${escapeHtml(title)}</h1><div class="card">${status === "error" ? `<div class="error">${escapeHtml(text)}</div>` : `<p>${escapeHtml(text)}</p>`}<p class="hint"><a href="/">Back to the start</a></p></div>`,
   );
 }
+
+export function renderWhatsAppLanding(publicNumber?: string): string {
+  const digits = publicNumber?.replace(/\D/g, "");
+  const button = digits && /^\d{7,15}$/.test(digits) ? `<p><a class="button" href="https://wa.me/${digits}">Message Rex on WhatsApp</a></p>` : "";
+  return layout("Rex on WhatsApp", `<h1>Meet Rex.</h1><p class="lead">Your assistant on WhatsApp. Send a message to get started.</p><div class="card"><p>Each person gets a private agent with their own conversations, memory and connected apps.</p>${button}<p class="hint">You can delete your account by messaging “delete my account”.</p></div>`);
+}

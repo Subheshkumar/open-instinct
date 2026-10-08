@@ -25,6 +25,7 @@ export {
 } from "./composio.js";
 export { appsGuidance, type AppsGuidanceOptions } from "./guidance.js";
 export { appsTools, describeStatus, type AppsLike, type AppsToolDeps } from "./tools.js";
+export { revokeUserConnections, type AccountCleanupClient } from "./cleanup.js";
 export { wrapMcpTool, wrapMcpTools, toolNameFor, describeCall, parametersFor, metaFor, TOOL_NAME_PREFIX, type McpToolSource } from "./wrap.js";
 
 /** Toolkits a new agent starts with. */

@@ -3,6 +3,7 @@ import { consoleLogger } from "./logger.js";
 import type { LinkPassthrough } from "./provision.js";
 import { type GatewayServer, createGateway } from "./server.js";
 import { UserStore } from "./store.js";
+import type { WhatsAppGatewayConfig } from "./whatsapp.js";
 
 export const DEFAULT_AGENT_IMAGE = "ghcr.io/mariagorskikh/open-instinct-agent:latest";
 
@@ -27,6 +28,20 @@ export interface GatewayEnv {
   useMaritimeLlm: boolean;
   maritimeModel?: string;
   link?: LinkPassthrough;
+  whatsapp?: WhatsAppGatewayConfig;
+  agentExtraEnv?: Record<string, string>;
+}
+
+function positiveInteger(env: NodeJS.ProcessEnv, key: string, fallback: number): number {
+  const value = Number(env[key] ?? fallback);
+  if (!Number.isSafeInteger(value) || value < 1 || value > 100_000) throw new Error(`${key} must be an integer from 1 to 100000`);
+  return value;
+}
+
+function money(env: NodeJS.ProcessEnv, key: string, fallback: number): string {
+  const value = Number(env[key] ?? fallback);
+  if (!Number.isFinite(value) || value < 0) throw new Error(`${key} must be a non-negative number`);
+  return String(value);
 }
 
 function truthy(v: string | undefined): boolean {
@@ -40,6 +55,21 @@ export function readEnv(env: NodeJS.ProcessEnv): GatewayEnv {
   if (!maritimeApiKey) throw new Error("MARITIME_API_KEY is required (the gateway forwards every message through Maritime).");
   const publicUrl = env["GATEWAY_PUBLIC_URL"] ?? `http://localhost:${port}`;
   const idle = env["INSTINCT_IDLE_TTL_SECONDS"] ? Number(env["INSTINCT_IDLE_TTL_SECONDS"]) : undefined;
+  let whatsapp: WhatsAppGatewayConfig | undefined;
+  if (["WHATSAPP_ACCESS_TOKEN", "WHATSAPP_APP_SECRET", "WHATSAPP_VERIFY_TOKEN", "WHATSAPP_PHONE_NUMBER_ID", "WHATSAPP_API_VERSION"].some((key) => env[key]?.trim())) {
+    const required = (key: string): string => { const value = env[key]?.trim(); if (!value) throw new Error(`${key} is required for WhatsApp`); return value; };
+    const gatewayUrl = new URL(publicUrl);
+    if (gatewayUrl.protocol !== "https:" && !["localhost", "127.0.0.1", "[::1]"].includes(gatewayUrl.hostname)) throw new Error("WhatsApp GATEWAY_PUBLIC_URL must use HTTPS");
+    whatsapp = {
+      accessToken: required("WHATSAPP_ACCESS_TOKEN"), appSecret: required("WHATSAPP_APP_SECRET"), verifyToken: required("WHATSAPP_VERIFY_TOKEN"),
+      phoneNumberId: required("WHATSAPP_PHONE_NUMBER_ID"), apiVersion: required("WHATSAPP_API_VERSION"),
+      publicNumber: env.WHATSAPP_PUBLIC_NUMBER?.trim() || undefined,
+      messagesPerDay: positiveInteger(env, "WHATSAPP_MESSAGES_PER_DAY", 100), repliesPerDay: positiveInteger(env, "WHATSAPP_REPLIES_PER_DAY", 300),
+      maxUsers: positiveInteger(env, "WHATSAPP_MAX_USERS", 100), newUsersPerHour: positiveInteger(env, "WHATSAPP_NEW_USERS_PER_HOUR", 20),
+      notificationTemplate: env.WHATSAPP_NOTIFICATION_TEMPLATE?.trim() || undefined, templateLanguage: env.WHATSAPP_TEMPLATE_LANGUAGE?.trim() || "en",
+    };
+    if (!env.INSTINCT_AGENT_IMAGE?.trim()) throw new Error("INSTINCT_AGENT_IMAGE must name the agent image built from this WhatsApp-enabled repository");
+  }
   const linkClientId = env["LINK_CLIENT_ID"] || undefined;
   const link: LinkPassthrough | undefined = linkClientId
     ? {
@@ -67,6 +97,17 @@ export function readEnv(env: NodeJS.ProcessEnv): GatewayEnv {
     useMaritimeLlm: truthy(env["INSTINCT_USE_MARITIME_LLM"]),
     maritimeModel: env["INSTINCT_MARITIME_MODEL"] || undefined,
     link,
+    whatsapp,
+    agentExtraEnv: {
+      ...Object.fromEntries(["OPENAI_API_KEY", "OPENAI_BASE_URL", "GEMINI_API_KEY", "GROQ_API_KEY", "BRAVE_SEARCH_API_KEY"].filter((key) => env[key]?.trim()).map((key) => [key, env[key]!.trim()])),
+      ...(env.INSTINCT_MODEL ? { INSTINCT_MODEL: env.INSTINCT_MODEL } : {}),
+      ...(env.INSTINCT_OWNER_TIMEZONE ? { INSTINCT_OWNER_TIMEZONE: env.INSTINCT_OWNER_TIMEZONE } : {}),
+      ...(whatsapp ? {
+        INSTINCT_SPEND_PER_ACTION_USD: money(env, "INSTINCT_SPEND_PER_ACTION_USD", 25),
+        INSTINCT_SPEND_PER_DAY_USD: money(env, "INSTINCT_SPEND_PER_DAY_USD", 50),
+        INSTINCT_SPEND_ASK_ABOVE_USD: money(env, "INSTINCT_SPEND_ASK_ABOVE_USD", 0),
+      } : {}),
+    },
   };
 }
 
@@ -101,7 +142,7 @@ export function startGateway(cfg: GatewayEnv): GatewayServer {
   const inkbox = cfg.inkboxAdminApiKey
     ? new InkboxProvisioner({ adminApiKey: cfg.inkboxAdminApiKey, baseUrl: cfg.inkboxBaseUrl })
     : undefined;
-  if (!inkbox) log.warn("gateway.relay_only", { reason: "INKBOX_ADMIN_API_KEY not set; signup disabled" });
+  if (!inkbox && !cfg.whatsapp) log.warn("gateway.relay_only", { reason: "INKBOX_ADMIN_API_KEY not set; signup disabled" });
   if (!cfg.publicUrl.startsWith("https://")) log.warn("gateway.public_url_not_https", { publicUrl: cfg.publicUrl });
 
   const server = createGateway({
@@ -109,6 +150,7 @@ export function startGateway(cfg: GatewayEnv): GatewayServer {
     publicUrl: cfg.publicUrl,
     inkbox,
     inkboxBaseUrl: cfg.inkboxBaseUrl,
+    whatsapp: cfg.whatsapp,
     maritime: {
       apiKey: cfg.maritimeApiKey,
       baseUrl: cfg.maritimeBaseUrl,
@@ -116,6 +158,7 @@ export function startGateway(cfg: GatewayEnv): GatewayServer {
       idleTtlSeconds: cfg.idleTtlSeconds,
       useMaritimeLlm: cfg.useMaritimeLlm,
       maritimeModel: cfg.maritimeModel,
+      extraEnv: cfg.agentExtraEnv,
     },
     signupSecret: cfg.signupSecret,
     anthropicApiKey: cfg.anthropicApiKey,

@@ -7,6 +7,7 @@ import { defineTool, type RegisteredTool, type ToolContext, type ToolResultLike 
 
 export interface SetupInput {
   inkbox?: { handle: string };
+  whatsapp?: boolean;
   computerKind?: string;
   apps?: { connected: string[]; anyApp: boolean; toolkits: string[] };
   wallet?: { connected: boolean };
@@ -14,7 +15,9 @@ export interface SetupInput {
 
 export function setupSummaryFor(input: SetupInput): string {
   const lines = ["# What is set up right now"];
-  if (input.inkbox) {
+  if (input.whatsapp) {
+    lines.push("- Messaging: WhatsApp connected. Replies, approval questions, sign-in links and completed background tasks reach the owner's private WhatsApp thread. Media and file delivery are not configured; provide text summaries. Account deletion: the owner can send 'delete my account'.");
+  } else if (input.inkbox) {
     lines.push(`- Messaging: yes. You reach the owner by iMessage and email through Inkbox as @${input.inkbox.handle} (SMS too when the identity has a phone number). Files go out as attachments with send_file.`);
   } else {
     lines.push("- Messaging: no Inkbox identity on this agent. Replies only reach the dashboard or terminal chat; there is no iMessage, SMS or email yet. To enable: the person running this agent sets INKBOX_API_KEY and INKBOX_AGENT_HANDLE (see docs/KEYS.md).");
@@ -40,7 +43,7 @@ export function setupSummaryFor(input: SetupInput): string {
   } else {
     lines.push("- Payments: not set up (no Link client). Purchases end with a desktop takeover so the owner pays themselves, or with you stopping at checkout.");
   }
-  lines.push("- PDFs and files: yes. create_pdf writes a PDF in the workspace; send_file delivers any workspace file.");
+  lines.push(input.whatsapp ? "- PDFs and files: create_pdf writes files in the private workspace. WhatsApp file delivery is not configured; do not claim a file was sent." : "- PDFs and files: yes. create_pdf writes a PDF in the workspace; send_file delivers any workspace file.");
   return lines.join("\n");
 }
 

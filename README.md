@@ -60,6 +60,8 @@ pnpm instinct deploy --image ghcr.io/mariagorskikh/open-instinct-agent:latest
 
 For many people, run the [gateway](packages/gateway/README.md): a signup page that provisions an identity and an agent per person. Guide: [DEPLOY-MARITIME.md](docs/DEPLOY-MARITIME.md).
 
+For Rex on one shared WhatsApp number with a private agent per user, use the [WhatsApp deployment guide](docs/WHATSAPP.md). The Meta webhook onboards each sender and routes messages to their own Maritime VM.
+
 | The signup page | The connect page |
 |---|---|
 | <img src="docs/assets/screenshots/gateway-landing.png" alt="Gateway signup page" width="480"> | <img src="docs/assets/screenshots/gateway-connect.png" alt="Connect page" width="480"> |
@@ -71,6 +73,7 @@ For many people, run the [gateway](packages/gateway/README.md): a signup page th
 ```
 packages/core       Pi agent loop, policy engine, memory, scheduler, approvals, audit
 packages/inkbox     iMessage, SMS, email, webhooks, agent-to-agent transport
+packages/whatsapp   direct Meta WhatsApp transport and private gateway reply relay
 packages/computer   the desktop (Maritime desktopd in the VM, or hosted Computers MCP)
 packages/apps       Composio Tool Router
 packages/network    contacts, tiers, grants, invitations, agent-to-agent tools

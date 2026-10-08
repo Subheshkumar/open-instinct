@@ -138,12 +138,18 @@ importers:
       '@inkbox/sdk':
         specifier: ^0.7.13
         version: 0.7.13
+      '@open-instinct/apps':
+        specifier: workspace:*
+        version: link:../apps
       '@open-instinct/core':
         specifier: workspace:*
         version: link:../core
       '@open-instinct/inkbox':
         specifier: workspace:*
         version: link:../inkbox
+      '@open-instinct/whatsapp':
+        specifier: workspace:*
+        version: link:../whatsapp
       maritime-sdk:
         specifier: ^0.9.0
         version: 0.9.0
@@ -256,6 +262,25 @@ importers:
       '@open-instinct/payments':
         specifier: workspace:*
         version: link:../payments
+      '@open-instinct/whatsapp':
+        specifier: workspace:*
+        version: link:../whatsapp
+    devDependencies:
+      '@types/node':
+        specifier: ^22.15.0
+        version: 22.20.5
+      typescript:
+        specifier: ^5.8.3
+        version: 5.9.3
+      vitest:
+        specifier: ^3.2.4
+        version: 3.2.7(@types/node@22.20.5)(jiti@2.7.0)(tsx@4.23.15)(yaml@2.9.0)
+
+  packages/whatsapp:
+    dependencies:
+      '@open-instinct/core':
+        specifier: workspace:*
+        version: link:../core
     devDependencies:
       '@types/node':
         specifier: ^22.15.0

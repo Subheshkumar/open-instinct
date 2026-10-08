@@ -1,5 +1,7 @@
 # @open-instinct/server
 
+WhatsApp agents accept owner-bound `whatsapp.message` envelopes through the authenticated `/chat` surface and send replies via the gateway's private relay. `WHATSAPP_RELAY_URL`, `WHATSAPP_RELAY_TOKEN`, `WHATSAPP_PHONE_NUMBER_ID`, `INSTINCT_AGENT_HANDLE` and `INSTINCT_OWNER_CHANNEL=whatsapp` are provisioned per agent. See [WHATSAPP.md](../../docs/WHATSAPP.md).
+
 The agent process. One container, one person. It wires the core runtime to the
 optional pieces (Inkbox, computer, apps, trusted network), serves Maritime's BYO
 contract over HTTP, and takes Inkbox webhooks directly when self-hosted.

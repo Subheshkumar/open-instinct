@@ -27,6 +27,7 @@ import {
 } from "@open-instinct/core";
 import type { InboundMessage, InstinctConfig, Outbox, RegisteredTool } from "@open-instinct/core";
 import { InkboxA2A, InkboxChannel, InkboxInboundHydrator, InkboxProvisioner, messagingTools, sendFileTool } from "@open-instinct/inkbox";
+import { WhatsAppRelayOutbox } from "@open-instinct/whatsapp";
 import { computerGuidance, detectComputer } from "@open-instinct/computer";
 import type { ComputerBackend } from "@open-instinct/computer";
 import { ComposioApps, DEFAULT_TOOLKITS, appsGuidance, appsTools } from "@open-instinct/apps";
@@ -53,6 +54,7 @@ export interface BootOptions {
 
 export interface BootResult {
   runtime: AgentRuntime;
+  whatsappPhoneNumberId?: string;
   state: StateDir;
   config: InstinctConfig;
   scheduler: Scheduler;
@@ -74,6 +76,14 @@ export interface BootResult {
 
 export const DEFAULT_MARITIME_MCP_URL = "https://mcp.maritime.sh";
 
+export function operatorSpendLimits(env: NodeJS.ProcessEnv): { perActionUsd: number; perDayUsd: number; askAbove: number } | undefined {
+  const keys = ["INSTINCT_SPEND_PER_ACTION_USD", "INSTINCT_SPEND_PER_DAY_USD", "INSTINCT_SPEND_ASK_ABOVE_USD"];
+  if (!keys.some((key) => env[key] !== undefined)) return undefined;
+  const values = keys.map((key, i) => Number(env[key] ?? [25, 50, 0][i]));
+  if (values.some((value) => !Number.isFinite(value) || value < 0)) throw new Error("Invalid operator spending limits");
+  return { perActionUsd: values[0]!, perDayUsd: values[1]!, askAbove: values[2]! };
+}
+
 export async function boot(env: NodeJS.ProcessEnv, opts: BootOptions = {}): Promise<BootResult> {
   const log = opts.logger ?? ((m: string) => console.log(`[instinct] ${m}`));
   const startedAt = Date.now();
@@ -87,6 +97,7 @@ export async function boot(env: NodeJS.ProcessEnv, opts: BootOptions = {}): Prom
   const audit = new AuditLog(state);
   const policy = new PolicyEngine(loadPolicy(state), {
     spentTodayUsd: () => audit.spentTodayUsd(config.owner.timezone),
+    spendLimits: operatorSpendLimits(env),
   });
   const approvals = new ApprovalStore(state);
   const scheduler = new Scheduler(state);
@@ -126,6 +137,16 @@ export async function boot(env: NodeJS.ProcessEnv, opts: BootOptions = {}): Prom
       ...(opts.fetchImpl ? { fetchImpl: opts.fetchImpl } : {}),
     });
     const wrapped = new ChatAwareOutbox(channel);
+    outbox = wrapped;
+    chatBuffer = wrapped.chat;
+  } else if (env.WHATSAPP_RELAY_URL) {
+    const whatsapp = new WhatsAppRelayOutbox({
+      url: env.WHATSAPP_RELAY_URL,
+      token: env.WHATSAPP_RELAY_TOKEN ?? "",
+      ownerPhone: config.owner.phones[0] ?? "",
+      fetchImpl: opts.fetchImpl,
+    });
+    const wrapped = new ChatAwareOutbox(whatsapp);
     outbox = wrapped;
     chatBuffer = wrapped.chat;
   } else {
@@ -297,6 +318,7 @@ export async function boot(env: NodeJS.ProcessEnv, opts: BootOptions = {}): Prom
     setupSummary: () =>
       setupSummaryFor({
         inkbox: inkbox ? { handle: inkbox.handle } : undefined,
+        whatsapp: Boolean(env.WHATSAPP_RELAY_URL),
         computerKind: computer?.kind,
         apps: apps ? { connected: appsConnected ?? [], anyApp: apps.allToolkits, toolkits: apps.toolkitSlugs } : undefined,
         wallet: wallet ? { connected: wallet.isConnected() } : undefined,
@@ -324,6 +346,7 @@ export async function boot(env: NodeJS.ProcessEnv, opts: BootOptions = {}): Prom
 
   return {
     runtime,
+    whatsappPhoneNumberId: env.WHATSAPP_PHONE_NUMBER_ID,
     state,
     config,
     scheduler,

@@ -1,0 +1,14 @@
+services:
+  gateway:
+    build:
+      context: ..
+      dockerfile: deploy/Dockerfile.gateway
+    env_file: .env.whatsapp
+    ports:
+      - "127.0.0.1:8787:8787"
+    volumes:
+      - rex-gateway:/data
+    restart: unless-stopped
+
+volumes:
+  rex-gateway:

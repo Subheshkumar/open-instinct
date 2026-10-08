@@ -56,6 +56,8 @@ export function configFromEnv(env: NodeJS.ProcessEnv): InstinctConfig {
   if (env.INSTINCT_MODEL?.trim()) cfg.model.primary = env.INSTINCT_MODEL.trim();
   if (env.INSTINCT_AGENT_NAME?.trim()) cfg.agent.name = env.INSTINCT_AGENT_NAME.trim();
   if (env.INKBOX_AGENT_HANDLE?.trim()) cfg.agent.handle = normalizeHandle(env.INKBOX_AGENT_HANDLE);
+  if (env.INSTINCT_AGENT_HANDLE?.trim()) cfg.agent.handle = normalizeHandle(env.INSTINCT_AGENT_HANDLE);
+  if (env.INSTINCT_OWNER_CHANNEL === "whatsapp") cfg.owner.channel = "whatsapp";
   const mode = env.INSTINCT_COMPUTER?.trim() as InstinctConfig["computer"]["mode"] | undefined;
   if (mode && COMPUTER_MODES.has(mode)) cfg.computer.mode = mode;
   const toolkits = splitList(env.COMPOSIO_TOOLKITS).map((t) => t.toLowerCase());

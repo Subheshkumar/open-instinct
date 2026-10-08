@@ -97,10 +97,10 @@ const STRANGERS_FILE = "strangers.json";
 const CONVERSATIONS_FILE = "conversations.json";
 const APPROVED_FILE = "approved.json";
 const PENDING_REPLIES_FILE = "pending-replies.json";
-const DELIVERABLE: ReadonlySet<Channel> = new Set(["imessage", "sms", "email", "a2a"]);
+const DELIVERABLE: ReadonlySet<Channel> = new Set(["imessage", "sms", "whatsapp", "email", "a2a"]);
 /** Channels where the sender's identity is bound to the carrier or the process, so an owner reply can settle an approval. */
-const APPROVAL_CHANNELS: ReadonlySet<Channel> = new Set(["imessage", "sms", "chat"]);
-const CHANNELS: ReadonlySet<string> = new Set(["imessage", "sms", "email", "a2a", "chat", "scheduled", "system"]);
+const APPROVAL_CHANNELS: ReadonlySet<Channel> = new Set(["imessage", "sms", "whatsapp", "chat"]);
+const CHANNELS: ReadonlySet<string> = new Set(["imessage", "sms", "whatsapp", "email", "a2a", "chat", "scheduled", "system"]);
 const REPLY_TOOL = "reply_instinct";
 const PROCESSING_FILE = "processing-events.json";
 
@@ -253,7 +253,7 @@ export class AgentRuntime {
     deps.state.ensure();
     this.a2aStore = deps.a2aStore ?? new A2AStore(deps.state);
     const savedRoute = deps.state.readJson<{ conversationKey?: unknown; channel?: unknown }>("owner-route.json", {});
-    if (typeof savedRoute.conversationKey === "string" && ["imessage", "sms"].includes(String(savedRoute.channel))) {
+    if (typeof savedRoute.conversationKey === "string" && ["imessage", "sms", "whatsapp"].includes(String(savedRoute.channel))) {
       this.ownerLast = { conversationKey: savedRoute.conversationKey, channel: savedRoute.channel as Channel };
     }
     this.notifier = new OwnerNotifier({
@@ -793,10 +793,10 @@ export class AgentRuntime {
     const last = this.ownerLast;
     const phone = this.deps.config.owner.phones[0];
     let out: OutboundMessage;
-    if (last && (last.channel === "imessage" || last.channel === "sms")) {
+    if (last && (last.channel === "imessage" || last.channel === "sms" || last.channel === "whatsapp")) {
       out = { channel: last.channel, conversationKey: last.conversationKey, text };
     } else if (phone) {
-      out = { channel: "imessage", to: phone, text };
+      out = { channel: this.deps.config.owner.channel ?? "imessage", to: phone, text };
     } else if (last && DELIVERABLE.has(last.channel) && last.channel !== "a2a") {
       out = { channel: last.channel as OutboundChannel, conversationKey: last.conversationKey, text };
     } else {

@@ -46,7 +46,7 @@ export const OWNER_EMAIL_PRINCIPAL_ID = "owner:email";
 export const OWNER_EMAIL_TIER = "partner";
 
 /** Channels where a message from the owner's address really is the owner. */
-export const OWNER_VERIFIED_CHANNELS: ReadonlySet<InboundMessage["channel"]> = new Set(["imessage", "sms", "chat", "scheduled", "system"]);
+export const OWNER_VERIFIED_CHANNELS: ReadonlySet<InboundMessage["channel"]> = new Set(["imessage", "sms", "whatsapp", "chat", "scheduled", "system"]);
 
 /** Handles that must never be registered or honoured as an agent handle. */
 export const RESERVED_HANDLES: ReadonlySet<string> = new Set(["owner"]);

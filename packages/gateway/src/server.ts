@@ -4,14 +4,17 @@ import { DurableInbox } from "@open-instinct/inkbox";
 import { join } from "node:path";
 import { type SignupLimits, SlidingWindowLimiter, clientAddress, pendingCount, signupLimits } from "./limits.js";
 import { type Logger, consoleLogger } from "./logger.js";
-import { GITHUB_URL, type RouterInfo, connectRouterFor, renderConnect, renderLanding, renderLinkDone, renderMessage, renderPending } from "./pages.js";
+import { GITHUB_URL, type RouterInfo, connectRouterFor, renderConnect, renderLanding, renderLinkDone, renderMessage, renderPending, renderWhatsAppLanding } from "./pages.js";
 import { type LinkPassthrough, type MaritimeProvisionOptions, newUserId, provisionUser } from "./provision.js";
 import { EventDeduper, type HeaderMap, relayVerifiedEvent, relayGatewayEvent, verifyForUser } from "./relay.js";
 import { type UserRecord, type UserStore, publicUser } from "./store.js";
 import { validateSignup } from "./validate.js";
+import { parseWhatsAppWebhook, secretMatches, verifyWhatsAppSignature } from "@open-instinct/whatsapp";
+import { WhatsAppGateway, type WhatsAppGatewayConfig } from "./whatsapp.js";
 
 export interface GatewayOptions {
   store: UserStore;
+  whatsapp?: WhatsAppGatewayConfig;
   publicUrl: string;
   /** Without a provisioner the gateway only relays; signup is disabled. */
   inkbox?: InkboxProvisioner;
@@ -47,6 +50,8 @@ export interface GatewayOptions {
    * the connect link to the phone itself.
    */
   notifyExisting?: (user: UserRecord, connectUrl: string) => Promise<void>;
+  /** Test/embedding seam for deleting a user's provider-held connected accounts. */
+  revokeAppsForUser?: (user: UserRecord) => Promise<void>;
 }
 
 export interface GatewayServer extends Server {
@@ -119,6 +124,7 @@ export function createGateway(opts: GatewayOptions): GatewayServer {
   let routerCache: { at: number; value: RouterInfo } | undefined;
   const perUserRouter = new Map<string, { at: number; value: RouterInfo }>();
   const inFlight = new Set<string>();
+  const whatsapp = opts.whatsapp ? new WhatsAppGateway({ ...opts, whatsapp: opts.whatsapp }) : undefined;
 
   const relayDeps = {
     maritime: { apiKey: opts.maritime.apiKey, baseUrl: opts.maritime.baseUrl },
@@ -192,9 +198,10 @@ export function createGateway(opts: GatewayOptions): GatewayServer {
   }
 
   function resumePending(): number {
-    if (!opts.inkbox) return 0;
-    let n = 0;
+    let n = whatsapp?.resumePending() ?? 0;
+    if (!opts.inkbox) return n;
     for (const u of opts.store.all()) {
+      if (u.channel === "whatsapp") continue;
       if (u.status !== "provisioning") continue;
       startProvisioning(u);
       n++;
@@ -326,12 +333,42 @@ export function createGateway(opts: GatewayOptions): GatewayServer {
     const parts = url.pathname.split("/").filter(Boolean);
     const method = req.method ?? "GET";
 
+    if (parts.join("/") === "webhooks/whatsapp") {
+      if (!whatsapp || !opts.whatsapp) throw new HttpError(503, "WhatsApp is not configured");
+      if (method === "GET") {
+        if (url.searchParams.get("hub.mode") !== "subscribe" || !secretMatches(opts.whatsapp.verifyToken, url.searchParams.get("hub.verify_token") ?? undefined)) throw new HttpError(403, "invalid verification token");
+        return send(res, 200, "text/plain; charset=utf-8", url.searchParams.get("hub.challenge") ?? "");
+      }
+      if (method !== "POST") throw new HttpError(405, "method not allowed");
+      const raw = await readBody(req, maxBody);
+      const signature = req.headers["x-hub-signature-256"];
+      if (!verifyWhatsAppSignature(raw, typeof signature === "string" ? signature : undefined, opts.whatsapp.appSecret)) throw new HttpError(401, "invalid signature");
+      let payload: unknown;
+      try { payload = JSON.parse(raw.toString("utf8")); } catch { throw new HttpError(400, "invalid JSON"); }
+      for (const message of parseWhatsAppWebhook(payload, opts.whatsapp.phoneNumberId)) whatsapp.admit(message);
+      return json(res, 200, { accepted: true });
+    }
+    if (parts[0] === "api" && parts[1] === "whatsapp" && parts[2] === "send" && parts.length === 4) {
+      if (!whatsapp) throw new HttpError(503, "WhatsApp is not configured");
+      if (method !== "POST") throw new HttpError(405, "method not allowed");
+      const auth = req.headers.authorization;
+      const token = typeof auth === "string" ? /^Bearer (.+)$/i.exec(auth)?.[1] : undefined;
+      let body: unknown;
+      try { body = JSON.parse((await readBody(req, 64 * 1024)).toString("utf8")); } catch (error) {
+        if (error instanceof HttpError) throw error;
+        throw new HttpError(400, "invalid JSON");
+      }
+      const result = whatsapp.send(decodeURIComponent(parts[3]!), token, body);
+      return json(res, result.status, result.body);
+    }
+
     if (parts.length === 0) {
       if (method !== "GET" && method !== "HEAD") throw new HttpError(405, "method not allowed");
+      if (opts.whatsapp && !opts.inkbox) return html(res, 200, renderWhatsAppLanding(opts.whatsapp.publicNumber));
       return html(res, 200, renderLanding({ signupEnabled: Boolean(opts.inkbox), requireInvite: Boolean(opts.signupSecret) }));
     }
     if (parts[0] === "health" && parts.length === 1) {
-      return json(res, 200, { ok: true, users: opts.store.all().length, signup: Boolean(opts.inkbox), github: GITHUB_URL, inbox: inbox.summary() });
+      return json(res, 200, { ok: true, users: opts.store.all().length, signup: Boolean(opts.inkbox), whatsapp: whatsapp?.summary(), github: GITHUB_URL, inbox: inbox.summary() });
     }
     if (parts[0] === "api" && parts[1] === "signup" && parts.length === 2) {
       if (method !== "POST") throw new HttpError(405, "method not allowed");
@@ -347,6 +384,7 @@ export function createGateway(opts: GatewayOptions): GatewayServer {
       if (method !== "GET") throw new HttpError(405, "method not allowed");
       const user = opts.store.get(decodeURIComponent(parts[1] ?? ""));
       if (!user) return html(res, 404, renderMessage("Not found", "No Instinct with that id. Check the link you were given.", "error"));
+      if (user.channel === "whatsapp") return html(res, 200, renderMessage("Rex on WhatsApp", user.status === "ready" ? "Your private agent is ready. Continue your conversation with Rex on WhatsApp." : "Your private agent is being prepared. Continue your conversation with Rex on WhatsApp."));
       const [shared, perUser] = await Promise.all([routerInfo(), routerInfoForUser(user)]);
       return html(res, 200, renderConnect(user, connectRouterFor(user.handle, shared, perUser)));
     }
@@ -370,7 +408,7 @@ export function createGateway(opts: GatewayOptions): GatewayServer {
       json(res, status, { error: message });
     });
   });
-  server.on("listening", () => inbox.start());
-  server.on("close", () => inbox.stop());
-  return Object.assign(server, { resumePending, drainWebhooks: () => inbox.close() });
+  server.on("listening", () => { inbox.start(); whatsapp?.start(); });
+  server.on("close", () => { inbox.stop(); whatsapp?.stop(); });
+  return Object.assign(server, { resumePending, drainWebhooks: async () => { await inbox.close(); await whatsapp?.close(); } });
 }

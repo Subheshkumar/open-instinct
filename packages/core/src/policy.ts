@@ -140,8 +140,9 @@ export class PolicyEngine {
   private policy: Policy;
   private readonly now: () => Date;
   private readonly spentTodayUsd: () => number;
+  private readonly spendLimits?: { perActionUsd: number; perDayUsd: number; askAbove: number };
 
-  constructor(policy: Policy, opts: { now?: () => Date; spentTodayUsd?: () => number } = {}) {
+  constructor(policy: Policy, opts: { now?: () => Date; spentTodayUsd?: () => number; spendLimits?: { perActionUsd: number; perDayUsd: number; askAbove: number } } = {}) {
     this.policy = clone(policy);
     this.policy.grants ??= [];
     this.policy.tiers ??= {};
@@ -149,6 +150,13 @@ export class PolicyEngine {
     this.policy.strangerLimits = { ...defaultPolicy().strangerLimits, ...(this.policy.strangerLimits ?? {}) };
     this.now = opts.now ?? (() => new Date());
     this.spentTodayUsd = opts.spentTodayUsd ?? (() => 0);
+    this.spendLimits = opts.spendLimits;
+    if (this.spendLimits) {
+      for (const value of Object.values(this.spendLimits)) if (!Number.isFinite(value) || value < 0) throw new Error("Invalid operator spending limit");
+      this.policy.spend.perActionUsd = Math.min(this.policy.spend.perActionUsd, this.spendLimits.perActionUsd);
+      this.policy.spend.perDayUsd = Math.min(this.policy.spend.perDayUsd, this.spendLimits.perDayUsd);
+      this.policy.spend.askAbove = Math.min(this.policy.spend.askAbove, this.spendLimits.askAbove);
+    }
   }
 
   /** Tier default after overrides. Every tier has every capability, so this never misses. */
@@ -277,6 +285,11 @@ export class PolicyEngine {
   /** All capabilities must pass. Deny beats ask beats allow. */
   evaluate(principal: Principal, meta: ToolMeta, args: unknown): PolicyDecision {
     const at = this.now();
+    if (this.spendLimits && meta.capabilities.some((cap) => SPEND_CAPABILITIES.has(cap))) {
+      const amount = meta.amountUsd?.(args);
+      if (amount === undefined || !Number.isFinite(amount) || amount < 0) return { outcome: "deny", reason: "A priced quote is required to enforce the operator's spending limits" };
+      if (amount > this.spendLimits.perActionUsd || this.spentTodayUsd() + amount > this.spendLimits.perDayUsd) return { outcome: "deny", reason: "This purchase exceeds the operator's spending limits" };
+    }
     if (meta.capabilities.length === 0) return { outcome: "allow", reason: "tool declares no capabilities" };
     const outcomes = meta.capabilities.map((c) => this.evaluateOne(principal, c, meta, args, at));
 

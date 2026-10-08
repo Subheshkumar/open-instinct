@@ -1,5 +1,7 @@
 # @open-instinct/gateway
 
+Direct Meta WhatsApp support is available: one shared Rex number, first-message onboarding, and one private Maritime agent per sender. See [WHATSAPP.md](../../docs/WHATSAPP.md) for credentials, limits, deletion and deployment. WhatsApp uses `GET`/`POST /webhooks/whatsapp` and the private `POST /api/whatsapp/send/:userId` reply relay; the Inkbox setup below remains supported.
+
 The gateway is the small, always-on front door for a multi-user Open Instinct deployment. One gateway serves many people. Each person's agent runs in its own Maritime microVM and sleeps when idle; the gateway is what wakes it when a message arrives.
 
 It does three things:

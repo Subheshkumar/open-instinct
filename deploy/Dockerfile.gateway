@@ -1,5 +1,5 @@
-# Open Instinct gateway image: the stateless relay from Inkbox webhooks to Maritime agents,
-# plus the signup and connect pages. One per deployment, many users.
+# Open Instinct gateway image: relays WhatsApp and Inkbox webhooks to private Maritime agents.
+# One gateway per deployment, many users. Persist its user registry and queues on a volume.
 FROM node:22-slim AS base
 ENV PNPM_HOME=/pnpm
 ENV PATH=$PNPM_HOME:$PATH
@@ -13,6 +13,7 @@ FROM base AS deps
 COPY package.json pnpm-workspace.yaml pnpm-lock.yaml .npmrc tsconfig.base.json ./
 COPY packages/core/package.json packages/core/
 COPY packages/inkbox/package.json packages/inkbox/
+COPY packages/whatsapp/package.json packages/whatsapp/
 COPY packages/computer/package.json packages/computer/
 COPY packages/apps/package.json packages/apps/
 COPY packages/network/package.json packages/network/

@@ -16,6 +16,7 @@ import { randomUUID, timingSafeEqual } from "node:crypto";
 import { decodeEvent } from "@open-instinct/core";
 import type { AgentRuntime, HandleResult, InboundMessage, InstinctConfig, OutboundMessage, ScheduleEntry, Scheduler, StateDir } from "@open-instinct/core";
 import { DurableInbox, parseInkboxEvent, verifyInkboxSignature } from "@open-instinct/inkbox";
+import { parseWhatsAppEvent, WHATSAPP_MESSAGE_EVENT } from "@open-instinct/whatsapp";
 
 /** Replies the console outbox is holding for a chat conversation. */
 export interface ChatBuffer {
@@ -36,6 +37,7 @@ export interface WalletCallback {
 /** The slice of a boot() result the HTTP layer needs. Tests pass stubs. */
 export interface HttpApp {
   state?: StateDir;
+  whatsappPhoneNumberId?: string;
   hydrateInbound?(msg: InboundMessage): Promise<InboundMessage>;
   runtime: Pick<AgentRuntime, "handleInbound" | "stats"> & Partial<Pick<AgentRuntime, "runScheduled">>;
   scheduler: Pick<Scheduler, "toMaritimeSchedules"> & Partial<Pick<Scheduler, "list" | "markRan">>;
@@ -168,6 +170,11 @@ export function presentedToken(headers: http.IncomingHttpHeaders): string | unde
 export async function handleChat(app: HttpApp, body: ChatRequest, now: Date = new Date()): Promise<ChatResponse> {
   const event = decodeEvent(body.message);
   if (event !== undefined) {
+    if ((event as Record<string, unknown>)?.type === WHATSAPP_MESSAGE_EVENT) {
+      const inbound = parseWhatsAppEvent(event, app.config.owner.phones, app.whatsappPhoneNumberId ?? "");
+      if (!inbound) return { response: "", acked: true, blocked: "WhatsApp message does not match this agent's owner" };
+      return acceptInbound(app, inbound);
+    }
     const link = linkCallbackOf(event);
     if (link) {
       if (!app.wallet) return { response: "", acked: true, blocked: "payments not configured" };

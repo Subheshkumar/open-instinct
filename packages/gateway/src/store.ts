@@ -4,6 +4,14 @@ import { join } from "node:path";
 /** One signed-up person. Secrets (identity key, signing key) never leave the gateway process. */
 export interface UserRecord {
   id: string;
+  channel?: "inkbox" | "whatsapp";
+  whatsappId?: string;
+  whatsappPhoneNumberId?: string;
+  whatsappRelayToken?: string;
+  whatsappLastInboundAt?: number;
+  whatsappUsage?: { day: string; messages: number; eventIds: string[] };
+  whatsappReplyUsage?: { day: string; messages: number; eventIds: string[] };
+  whatsappDeleteRequestedAt?: number;
   name: string;
   phone: string;
   email?: string;
@@ -18,7 +26,7 @@ export interface UserRecord {
   maritimeProjectId?: string;
   createdAt: string;
   updatedAt?: string;
-  status: "provisioning" | "ready" | "error";
+  status: "provisioning" | "ready" | "error" | "deleting";
   error?: string;
 }
 
@@ -64,6 +72,13 @@ export class UserStore {
 
   byPhone(phone: string): UserRecord | undefined {
     for (const u of this.load().values()) if (u.phone === phone) return clone(u);
+    return undefined;
+  }
+
+  byWhatsApp(waId: string, phoneNumberId: string): UserRecord | undefined {
+    for (const u of this.load().values()) {
+      if (u.channel === "whatsapp" && u.whatsappId === waId && u.whatsappPhoneNumberId === phoneNumberId) return clone(u);
+    }
     return undefined;
   }
 

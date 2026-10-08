@@ -1,0 +1,216 @@
+import { createHash, randomBytes } from "node:crypto";
+import { join } from "node:path";
+import { StateDir } from "@open-instinct/core";
+import { revokeUserConnections } from "@open-instinct/apps";
+import { DurableInbox } from "@open-instinct/inkbox";
+import { WhatsAppClient, secretMatches, whatsappEvent, type WhatsAppMessage } from "@open-instinct/whatsapp";
+import { deleteUserAgent, newUserId, provisionUser } from "./provision.js";
+import { relayGatewayEvent } from "./relay.js";
+import type { GatewayOptions } from "./server.js";
+import type { UserRecord } from "./store.js";
+
+export interface WhatsAppGatewayConfig {
+  accessToken: string;
+  appSecret: string;
+  verifyToken: string;
+  phoneNumberId: string;
+  apiVersion: string;
+  publicNumber?: string;
+  /** Hard admission limits stored across gateway restarts. */
+  messagesPerDay?: number;
+  repliesPerDay?: number;
+  maxUsers?: number;
+  newUsersPerHour?: number;
+  notificationTemplate?: string;
+  templateLanguage?: string;
+}
+
+interface Outgoing { userId: string; generation: string; text: string }
+const uncertain = (message: string): Error => Object.assign(new Error(message), { name: "InboundUncertainError" });
+
+/** One always-on WhatsApp front door; every sender owns exactly one private VM. Run a single replica. */
+export class WhatsAppGateway {
+  private readonly client: WhatsAppClient;
+  private readonly inbox: DurableInbox<WhatsAppMessage>;
+  private readonly outgoing: DurableInbox<Outgoing>;
+  private readonly state: StateDir;
+  private readonly locks = new Map<string, Promise<void>>();
+  private readonly now: () => number;
+
+  constructor(private readonly opts: GatewayOptions & { whatsapp: WhatsAppGatewayConfig }) {
+    this.now = opts.now ?? Date.now;
+    this.state = new StateDir(opts.store.dir);
+    this.client = new WhatsAppClient({ ...opts.whatsapp, fetchImpl: opts.fetchImpl });
+    this.outgoing = new DurableInbox({
+      file: join(opts.store.dir, "whatsapp-outbox.json"),
+      concurrency: 1,
+      handle: async (item) => {
+        const user = opts.store.get(item.userId);
+        if (!user || user.status === "deleting" || user.whatsappRelayToken !== item.generation) return;
+        if (!user.whatsappId) throw uncertain("Missing WhatsApp recipient");
+        if (this.now() - (user.whatsappLastInboundAt ?? 0) < 24 * 60 * 60_000) {
+          await this.client.sendText(user.whatsappId, item.text);
+        } else if (opts.whatsapp.notificationTemplate) {
+          await this.client.sendTemplate(user.whatsappId, item.text, opts.whatsapp.notificationTemplate, opts.whatsapp.templateLanguage ?? "en");
+        } else {
+          throw uncertain("WhatsApp reply window is closed and no notification template is configured");
+        }
+      },
+      onError: (id, status) => opts.logger?.warn("whatsapp.send_pending", { id, status }),
+    });
+    this.inbox = new DurableInbox({
+      file: join(opts.store.dir, "whatsapp-inbox.json"),
+      replayRunning: true, // VM admission deduplicates by the original Meta message id.
+      handle: (message) => this.serial(message.from, () => this.handle(message)),
+      onError: (id, status) => opts.logger?.warn("whatsapp.message_pending", { id, status }),
+    });
+  }
+
+  start(): void { this.inbox.start(); this.outgoing.start(); }
+  stop(): void { this.inbox.stop(); }
+  async close(): Promise<void> {
+    await this.inbox.close();
+    // Recovery jobs use the same sender locks but do not belong to the inbox.
+    // Keep reply admission open until these handlers have persisted their notices.
+    await Promise.allSettled([...this.locks.values()]);
+    await this.outgoing.close();
+  }
+  summary(): Record<string, unknown> { return { incoming: this.inbox.summary(), outgoing: this.outgoing.summary() }; }
+  admit(message: WhatsAppMessage): void { this.inbox.enqueue(`${message.phoneNumberId}:${message.id}`, message); }
+
+  /** Tokens are scoped to a user generation, never to a request-supplied recipient. */
+  send(userId: string, token: string | undefined, body: unknown): { status: number; body: Record<string, unknown> } {
+    const user = this.opts.store.get(userId);
+    if (!user || user.channel !== "whatsapp" || !secretMatches(user.whatsappRelayToken ?? "", token)) return { status: 401, body: { error: "invalid relay token" } };
+    if (user.status === "deleting") return { status: 410, body: { error: "account is being deleted" } };
+    const item = body as { id?: unknown; text?: unknown; to?: unknown } | null;
+    if (!item || typeof item.id !== "string" || !/^[A-Za-z0-9_-]{1,100}$/.test(item.id) || typeof item.text !== "string" || !item.text.trim() || item.text.length > 16_384 || item.to !== undefined) {
+      return { status: 400, body: { error: "expected { id, text }; recipient is fixed to the account owner" } };
+    }
+    const day = new Date(this.now()).toISOString().slice(0, 10);
+    const usage = user.whatsappReplyUsage?.day === day ? user.whatsappReplyUsage : { day, messages: 0, eventIds: [] };
+    if (!usage.eventIds.includes(item.id) && usage.messages >= (this.opts.whatsapp.repliesPerDay ?? 300)) return { status: 429, body: { error: "daily reply limit reached" } };
+    if (!usage.eventIds.includes(item.id)) {
+      usage.messages++;
+      usage.eventIds.push(item.id);
+      this.opts.store.save({ ...user, whatsappReplyUsage: usage });
+    }
+    const fresh = this.outgoing.enqueue(`${user.id}:${item.id}`, { userId: user.id, generation: user.whatsappRelayToken!, text: item.text });
+    return { status: 202, body: { accepted: true, duplicate: !fresh } };
+  }
+
+  resumePending(): number {
+    const users = this.opts.store.all().filter((u) => u.channel === "whatsapp" && ["provisioning", "deleting"].includes(u.status));
+    for (const user of users) void this.serial(user.whatsappId!, async () => {
+      const current = this.opts.store.get(user.id);
+      if (!current) return;
+      if (current.status === "deleting") await this.deleteAccount(current);
+      else await this.provision(current);
+    }).catch(() => this.opts.logger?.warn("whatsapp.resume_failed", { userId: user.id }));
+    return users.length;
+  }
+
+  private async serial(key: string, run: () => Promise<void>): Promise<void> {
+    const previous = this.locks.get(key) ?? Promise.resolve();
+    const next = previous.catch(() => undefined).then(run);
+    this.locks.set(key, next);
+    try { await next; } finally { if (this.locks.get(key) === next) this.locks.delete(key); }
+  }
+
+  private async provision(user: UserRecord): Promise<UserRecord> {
+    return provisionUser(user, { ...this.opts, userId: user.id });
+  }
+
+  private deletionKey(from: string): string {
+    return createHash("sha256").update(`${this.opts.whatsapp.phoneNumberId}:${from}`).digest("hex");
+  }
+
+  private async handle(message: WhatsAppMessage): Promise<void> {
+    const deleted = this.state.readJson<Record<string, number>>("whatsapp-deletions.json", {});
+    if (message.timestamp * 1000 <= (deleted[this.deletionKey(message.from)] ?? 0)) return;
+    // Ignore stale replays and reject future timestamps; neither may reopen a reply window.
+    if (message.timestamp * 1000 > this.now() + 300_000 || this.now() - message.timestamp * 1000 > 24 * 60 * 60_000) return;
+    let user = this.opts.store.byWhatsApp(message.from, message.phoneNumberId);
+    const text = message.text.trim();
+    if (!user && /^delete my account$/i.test(text)) {
+      await this.client.sendText(message.from, "You do not have a Rex account.");
+      return;
+    }
+    if (!user) {
+      if (!message.supported || text.length > 8000) {
+        await this.client.sendText(message.from, "Please send a text message of up to 8000 characters to start using Rex.");
+        return;
+      }
+      const all = this.opts.store.all().filter((u) => u.channel === "whatsapp");
+      const recent = this.state.readJson<number[]>("whatsapp-signups.json", []).filter((at) => at > this.now() - 3600_000);
+      if (all.length >= (this.opts.whatsapp.maxUsers ?? 100) || recent.length >= (this.opts.whatsapp.newUsersPerHour ?? 20)) {
+        await this.client.sendText(message.from, "Rex is at capacity for new accounts. Please try again later.");
+        return;
+      }
+      this.state.writeJson("whatsapp-signups.json", [...recent, this.now()]);
+      const id = newUserId();
+      user = this.opts.store.save({
+        id, channel: "whatsapp", name: message.name ?? "WhatsApp user", phone: `+${message.from}`, handle: `rex-${id.slice(4)}`,
+        whatsappId: message.from, whatsappPhoneNumberId: message.phoneNumberId, whatsappRelayToken: randomBytes(32).toString("hex"),
+        identityId: "", identityApiKey: "", signingKey: "", createdAt: new Date(this.now()).toISOString(), status: "provisioning",
+      });
+      this.opts.logger?.info("whatsapp.user_created", { userId: id });
+    }
+    user = this.opts.store.save({ ...user, whatsappLastInboundAt: Math.max(user.whatsappLastInboundAt ?? 0, message.timestamp * 1000) });
+    if (user.status === "deleting") { await this.deleteAccount(user); return; }
+    if (/^delete my account$/i.test(text)) {
+      this.opts.store.save({ ...user, whatsappDeleteRequestedAt: this.now() });
+      this.notice(user, "Reply DELETE within 10 minutes to delete your Rex agent, memory, files and connected-account credentials. Reply CANCEL to keep your account.", message.id);
+      return;
+    }
+    if (user.whatsappDeleteRequestedAt !== undefined) {
+      if (text === "DELETE" && this.now() - user.whatsappDeleteRequestedAt <= 600_000) {
+        user = this.opts.store.save({ ...user, status: "deleting" });
+        await this.deleteAccount(user);
+        return;
+      }
+      this.opts.store.save({ ...user, whatsappDeleteRequestedAt: undefined });
+      if (/^cancel$/i.test(text)) { this.notice(user, "Your Rex account has been kept.", message.id); return; }
+    }
+    const day = new Date(this.now()).toISOString().slice(0, 10);
+    const usage = user.whatsappUsage?.day === day ? user.whatsappUsage : { day, messages: 0, eventIds: [] };
+    if (!usage.eventIds.includes(message.id)) {
+      if (usage.messages >= (this.opts.whatsapp.messagesPerDay ?? 100)) {
+        // A deterministic notice id prevents duplicate limit messages within the day.
+        this.notice(user, "You have reached your daily Rex message limit. It resets at midnight UTC.", `limit-${day}`);
+        return;
+      }
+      usage.messages++;
+      usage.eventIds.push(message.id);
+      user = this.opts.store.save({ ...this.opts.store.get(user.id)!, whatsappUsage: usage });
+    }
+    if (!message.supported || text.length > 8000) {
+      this.notice(user, "For now, Rex accepts text messages of up to 8000 characters.", message.id);
+      return;
+    }
+    if (user.status !== "ready") user = await this.provision(user);
+    const result = await relayGatewayEvent(user, whatsappEvent(message), `whatsapp:${message.phoneNumberId}:${message.from}`, {
+      maritime: this.opts.maritime, fetchImpl: this.opts.fetchImpl, logger: this.opts.logger,
+    });
+    if (result.status !== "forwarded") throw new Error("WhatsApp agent admission failed");
+  }
+
+  private notice(user: UserRecord, text: string, id: string): void {
+    this.outgoing.enqueue(`${user.id}:notice:${id}`, { userId: user.id, generation: user.whatsappRelayToken!, text });
+  }
+
+  private async deleteAccount(user: UserRecord): Promise<void> {
+    // If a create timed out, recover its externalId before deleting so no orphan VM remains.
+    await deleteUserAgent(user, this.opts);
+    if (this.opts.revokeAppsForUser) await this.opts.revokeAppsForUser(user);
+    else if (this.opts.composioApiKey) await revokeUserConnections(this.opts.composioApiKey, user.handle);
+    const deleted = this.state.readJson<Record<string, number>>("whatsapp-deletions.json", {});
+    deleted[this.deletionKey(user.whatsappId!)] = this.now();
+    this.state.writeJson("whatsapp-deletions.json", deleted);
+    this.inbox.removeQueued((message) => message.from === user.whatsappId);
+    this.outgoing.removeQueued((item) => item.userId === user.id);
+    this.opts.store.remove(user.id);
+    this.opts.logger?.info("whatsapp.user_deleted", { userId: user.id });
+    await this.client.sendText(user.whatsappId!, "Your Rex account and private agent have been deleted. Message again to create a new account.");
+  }
+}

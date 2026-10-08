@@ -19,6 +19,16 @@ const purchaseMeta: ToolMeta = {
 };
 
 describe("DEFAULT_TIER_TABLE", () => {
+  it("enforces operator purchase ceilings even when the user policy or grants would allow more", () => {
+    const engine = new PolicyEngine(defaultPolicy(), { spendLimits: { perActionUsd: 25, perDayUsd: 50, askAbove: 0 }, spentTodayUsd: () => 40 });
+    expect(engine.evaluate(principalOf("owner"), purchaseMeta, { amountUsd: 26 }).outcome).toBe("deny");
+    expect(engine.evaluate(principalOf("owner"), purchaseMeta, { amountUsd: 11 }).outcome).toBe("deny");
+    expect(engine.evaluate(principalOf("owner"), purchaseMeta, {}).outcome).toBe("deny");
+    expect(engine.evaluate(principalOf("owner"), purchaseMeta, { amountUsd: 5 }).outcome).toBe("ask");
+    expect(engine.spend).toMatchObject({ perActionUsd: 25, perDayUsd: 50, askAbove: 0 });
+    engine.addGrant({ to: "contact:partner-person", capabilities: ["purchase"], scope: { maxUsd: 1000 } });
+    expect(engine.evaluate(principalOf("partner"), purchaseMeta, { amountUsd: 100 }).outcome).toBe("deny");
+  });
   it("has every capability for every tier", () => {
     for (const tier of TIER_ORDER) {
       for (const cap of ALL_CAPABILITIES) {

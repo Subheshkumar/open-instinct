@@ -83,6 +83,19 @@ export class DurableInbox<T> {
     return result;
   }
 
+  /** Account deletion can discard queued payloads; already-running work must settle before it is removed. */
+  removeQueued(predicate: (payload: T) => boolean): number {
+    let removed = 0;
+    for (const [id, row] of this.rows) {
+      if ((row.status === "queued" || row.status === "uncertain") && row.payload !== undefined && predicate(row.payload)) {
+        this.rows.delete(id);
+        removed++;
+      }
+    }
+    if (removed) this.persist();
+    return removed;
+  }
+
   /** Run due receipts; future retry times remain queued. Useful during shutdown and tests. */
   async drain(): Promise<void> {
     for (;;) {

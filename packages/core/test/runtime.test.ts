@@ -191,6 +191,16 @@ async function flush(): Promise<void> {
 }
 
 describe("AgentRuntime.handleInbound", () => {
+  it("delivers WhatsApp replies and restores the owner's WhatsApp route for scheduled work", async () => {
+    const h = harness();
+    h.deps.config.owner.channel = "whatsapp";
+    h.faux.setResponses([textTurn("Hello on WhatsApp"), textTurn("Scheduled reminder")]);
+    const result = await h.runtime.handleInbound(inbound({ channel: "whatsapp", from: OWNER_PHONE, conversationKey: "whatsapp:12345:16175550100", text: "hello" }));
+    expect(result.principal.kind).toBe("owner");
+    expect(h.sent[0]?.msg).toMatchObject({ channel: "whatsapp", text: "Hello on WhatsApp" });
+    await new AgentRuntime(h.deps).runScheduled({ id: "wa-reminder", enabled: true, prompt: "remind me", createdAt: new Date().toISOString() });
+    expect(h.sent[1]?.msg).toMatchObject({ channel: "whatsapp", conversationKey: "whatsapp:12345:16175550100", text: "Scheduled reminder" });
+  });
   it("runs a scripted tool call then text and returns the reply for chat", async () => {
     const h = harness();
     h.faux.setResponses([toolTurn("echo", { text: "hi" }), textTurn("Done: hi")]);
