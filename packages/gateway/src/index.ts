@@ -7,4 +7,5 @@ export * from "./pages.js";
 export * from "./limits.js";
 export * from "./server.js";
 export * from "./whatsapp.js";
+export * from "./referrals.js";
 export { readEnv, startGateway, checkSignupPolicy, DEFAULT_AGENT_IMAGE, type GatewayEnv } from "./main.js";

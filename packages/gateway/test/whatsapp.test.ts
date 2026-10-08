@@ -38,7 +38,7 @@ function upstream() {
 }
 
 async function serve(store: UserStore, api: ReturnType<typeof upstream>, opts: { now?: () => number; revokeAppsForUser?: (user: import("../src/store.js").UserRecord) => Promise<void>; config?: Partial<typeof config> & { messagesPerDay?: number; repliesPerDay?: number; notificationTemplate?: string; maxUsers?: number; newUsersPerHour?: number } } = {}) {
-  const server = createGateway({ store, fetchImpl: api.fetchImpl, now: opts.now, revokeAppsForUser: opts.revokeAppsForUser, logger: silentLogger, publicUrl: "https://rex.example.com", maritime: { apiKey: "maritime", agentImage: "rex-image" }, whatsapp: { ...config, ...opts.config } });
+  const server = createGateway({ store, fetchImpl: api.fetchImpl, now: opts.now, revokeAppsForUser: opts.revokeAppsForUser, logger: silentLogger, publicUrl: "https://rex.example.com", maritime: { apiKey: "maritime", agentImage: "rex-image" }, whatsapp: { ...config, bootstrapNumbers: ["919876543210", "919000000000"], ...opts.config } });
   servers.push(server);
   await new Promise<void>((r) => server.listen(0, "127.0.0.1", r));
   const base = `http://127.0.0.1:${(server.address() as AddressInfo).port}`;

@@ -2,6 +2,14 @@ import { describe, expect, it } from "vitest";
 import { DEFAULT_AGENT_IMAGE, checkSignupPolicy, readEnv } from "../src/main.js";
 
 describe("readEnv", () => {
+  it("normalizes an explicit bootstrap allowlist and rejects malformed phone numbers", () => {
+    const env = { MARITIME_API_KEY: "mk", INSTINCT_AGENT_IMAGE: "rex-image", WHATSAPP_ACCESS_TOKEN: "meta", WHATSAPP_APP_SECRET: "app", WHATSAPP_VERIFY_TOKEN: "verify", WHATSAPP_PHONE_NUMBER_ID: "12345", WHATSAPP_API_VERSION: "v23.0" };
+    expect(readEnv(env).whatsapp?.bootstrapNumbers).toEqual([]);
+    expect(readEnv({ ...env, WHATSAPP_BOOTSTRAP_NUMBERS: "+919876543210,919000000000,+919876543210" }).whatsapp?.bootstrapNumbers).toEqual(["919876543210", "919000000000"]);
+    for (const value of ["abc919876543210", "123", "919876543210,", "919876543210 919000000000"]) {
+      expect(() => readEnv({ ...env, WHATSAPP_BOOTSTRAP_NUMBERS: value })).toThrow(/WHATSAPP_BOOTSTRAP_NUMBERS/);
+    }
+  });
   it("requires MARITIME_API_KEY and reads the signup, Composio, Maritime LLM and Link settings", () => {
     expect(() => readEnv({})).toThrow(/MARITIME_API_KEY/);
     const cfg = readEnv({

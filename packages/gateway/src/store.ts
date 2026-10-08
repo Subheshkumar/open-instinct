@@ -12,6 +12,10 @@ export interface UserRecord {
   whatsappUsage?: { day: string; messages: number; eventIds: string[] };
   whatsappReplyUsage?: { day: string; messages: number; eventIds: string[] };
   whatsappDeleteRequestedAt?: number;
+  whatsappAccess?: { kind: "existing" | "bootstrap" | "referral"; grantedAt: string; referrerId?: string };
+  whatsappLoggedOutAt?: number;
+  /** A stable bearer invitation; recipient hashes retain the lifetime five-person limit after deletion. */
+  whatsappReferral?: { token: string; recipients: string[] };
   name: string;
   phone: string;
   email?: string;
@@ -33,6 +37,14 @@ export interface UserRecord {
 interface StoreFile {
   version: 1;
   users: UserRecord[];
+  metadata?: StoreMetadata;
+}
+
+export interface StoreMetadata {
+  /** One-time migration: later accounts must earn access through bootstrap or a referral. */
+  whatsappAccessMigratedAt?: string;
+  /** Sender-keyed lifetime quota survives deleting and recreating an inviter's account. */
+  whatsappReferralLedgers?: Record<string, { issuerId: string; token: string; recipients: string[] }>;
 }
 
 /**
@@ -44,6 +56,7 @@ export class UserStore {
   readonly dir: string;
   readonly file: string;
   private cache: Map<string, UserRecord> | undefined;
+  private metadata: StoreMetadata = {};
 
   constructor(dir: string) {
     this.dir = dir;
@@ -52,6 +65,11 @@ export class UserStore {
 
   all(): UserRecord[] {
     return [...this.load().values()].map(clone);
+  }
+
+  readMetadata(): StoreMetadata {
+    this.load();
+    return clone(this.metadata);
   }
 
   get(id: string): UserRecord | undefined {
@@ -84,15 +102,29 @@ export class UserStore {
 
   save(u: UserRecord): UserRecord {
     const next = { ...clone(u), updatedAt: new Date().toISOString() };
-    this.load().set(next.id, next);
-    this.persist();
-    return clone(next);
+    return this.transaction((users) => {
+      users.set(next.id, next);
+      return next;
+    });
   }
 
   remove(id: string): boolean {
-    const removed = this.load().delete(id);
-    if (removed) this.persist();
-    return removed;
+    if (!this.load().has(id)) return false;
+    return this.transaction((users) => users.delete(id));
+  }
+
+  /** Synchronous single-process transaction. Failed writes never change the in-memory authorization state. */
+  transaction<T>(change: (users: Map<string, UserRecord>, metadata: StoreMetadata) => T): T {
+    const users = clone(this.load());
+    const metadata = clone(this.metadata);
+    const result = change(users, metadata);
+    // Do not retain mutable references supplied by the callback.
+    const committed = clone(users);
+    const committedMetadata = clone(metadata);
+    this.persist(committed, committedMetadata);
+    this.cache = committed;
+    this.metadata = committedMetadata;
+    return clone(result);
   }
 
   private load(): Map<string, UserRecord> {
@@ -102,19 +134,20 @@ export class UserStore {
       const parsed = JSON.parse(readFileSync(this.file, "utf8")) as StoreFile | UserRecord[];
       const users = Array.isArray(parsed) ? parsed : parsed.users ?? [];
       for (const u of users) map.set(u.id, u);
+      if (!Array.isArray(parsed)) this.metadata = parsed.metadata ?? {};
     }
     this.cache = map;
     return map;
   }
 
-  private persist(): void {
+  private persist(users: Map<string, UserRecord>, metadata: StoreMetadata): void {
     mkdirSync(this.dir, { recursive: true, mode: 0o700 });
-    const body: StoreFile = { version: 1, users: [...this.load().values()] };
+    const body: StoreFile = { version: 1, users: [...users.values()], metadata };
     const tmp = `${this.file}.${process.pid}.tmp`;
     writeFileSync(tmp, JSON.stringify(body, null, 2) + "\n", { mode: 0o600 });
+    // Apply permissions before committing, so an error cannot leave disk committed but cache unchanged.
+    chmodSync(tmp, 0o600);
     renameSync(tmp, this.file);
-    // rename keeps the temp file's mode, but an older file may have been created more loosely.
-    chmodSync(this.file, 0o600);
   }
 }
 

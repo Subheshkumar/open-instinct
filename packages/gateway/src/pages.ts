@@ -280,5 +280,18 @@ export function renderMessage(title: string, text: string, status: "ok" | "error
 export function renderWhatsAppLanding(publicNumber?: string): string {
   const digits = publicNumber?.replace(/\D/g, "");
   const button = digits && /^\d{7,15}$/.test(digits) ? `<p><a class="button" href="https://wa.me/${digits}">Message Rex on WhatsApp</a></p>` : "";
-  return layout("Rex on WhatsApp", `<h1>Meet Rex.</h1><p class="lead">Your assistant on WhatsApp. Send a message to get started.</p><div class="card"><p>Each person gets a private agent with their own conversations, memory and connected apps.</p>${button}<p class="hint">You can delete your account by messaging “delete my account”.</p></div>`);
+  return layout("Rex on WhatsApp", `<h1>Meet Rex.</h1><p class="lead">Your assistant on WhatsApp. Join with an invitation from a Rex member.</p><div class="card"><p>Each person gets a private agent with their own conversations, memory and connected apps.</p><p>Already a member? Send LOGIN to Rex. To invite friends, send REFERRAL. Each member can invite up to five people.</p>${button}<p class="hint">Send LOGOUT to stop chatting, or “delete my account” to delete your account.</p></div>`);
+}
+
+export function renderWhatsAppInvite(token: string, remaining: number, publicNumber?: string): string {
+  const command = `JOIN ${token}`;
+  const digits = publicNumber?.replace(/\D/g, "");
+  const button = digits && /^\d{7,15}$/.test(digits)
+    ? `<p><a class="btn" href="https://wa.me/${digits}?text=${encodeURIComponent(command)}" rel="noreferrer">Join Rex on WhatsApp</a></p>`
+    : "";
+  const title = remaining === 0 ? "This invitation is full." : "You’re invited to Rex.";
+  const instructions = remaining === 0
+    ? "This member has already invited five people. New members need another referral link. If you previously joined through this invitation, you can reuse it from the same WhatsApp account."
+    : "Open Rex on WhatsApp and send the message below from your own account to log in.";
+  return layout("Join Rex", `<h1>${title}</h1><p class="lead">Your private assistant on WhatsApp.</p><div class="card"><p>${instructions}</p><p><code>${escapeHtml(command)}</code></p>${button}<p class="hint">${remaining} invitations remaining. Opening this page does not reserve a place; your invitation is redeemed when you send the message.</p></div>`);
 }

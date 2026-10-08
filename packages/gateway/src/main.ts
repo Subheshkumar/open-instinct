@@ -48,6 +48,13 @@ function truthy(v: string | undefined): boolean {
   return v !== undefined && /^(1|true|yes)$/i.test(v.trim());
 }
 
+function bootstrapNumbers(value: string | undefined): string[] {
+  if (!value?.trim()) return [];
+  const numbers = value.split(",").map((number) => number.trim());
+  if (numbers.some((number) => !/^\+?\d{7,15}$/.test(number))) throw new Error("WHATSAPP_BOOTSTRAP_NUMBERS must contain comma-separated phone numbers with country codes");
+  return [...new Set(numbers.map((number) => number.replace(/^\+/, "")))];
+}
+
 /** The only place the gateway reads process.env. Everything else takes options. */
 export function readEnv(env: NodeJS.ProcessEnv): GatewayEnv {
   const port = Number(env["PORT"] ?? 8787);
@@ -64,6 +71,7 @@ export function readEnv(env: NodeJS.ProcessEnv): GatewayEnv {
       accessToken: required("WHATSAPP_ACCESS_TOKEN"), appSecret: required("WHATSAPP_APP_SECRET"), verifyToken: required("WHATSAPP_VERIFY_TOKEN"),
       phoneNumberId: required("WHATSAPP_PHONE_NUMBER_ID"), apiVersion: required("WHATSAPP_API_VERSION"),
       publicNumber: env.WHATSAPP_PUBLIC_NUMBER?.trim() || undefined,
+      bootstrapNumbers: bootstrapNumbers(env.WHATSAPP_BOOTSTRAP_NUMBERS),
       messagesPerDay: positiveInteger(env, "WHATSAPP_MESSAGES_PER_DAY", 100), repliesPerDay: positiveInteger(env, "WHATSAPP_REPLIES_PER_DAY", 300),
       maxUsers: positiveInteger(env, "WHATSAPP_MAX_USERS", 100), newUsersPerHour: positiveInteger(env, "WHATSAPP_NEW_USERS_PER_HOUR", 20),
       notificationTemplate: env.WHATSAPP_NOTIFICATION_TEMPLATE?.trim() || undefined, templateLanguage: env.WHATSAPP_TEMPLATE_LANGUAGE?.trim() || "en",
